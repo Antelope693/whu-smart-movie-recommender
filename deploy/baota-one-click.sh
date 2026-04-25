@@ -10,8 +10,12 @@ BRANCH="main"
 RUN_USER="root"
 
 MYSQL_URL="jdbc:mysql://127.0.0.1:3306/movie_recommender?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai"
-MYSQL_USER="root"
-MYSQL_PASSWORD="change_me"
+# MySQL admin account is used only during bootstrap.
+MYSQL_ADMIN_USER="root"
+MYSQL_ADMIN_PASSWORD="change_me_admin"
+# App account is written into backend.env and used by Spring Boot runtime.
+MYSQL_APP_USER="movie_app"
+MYSQL_APP_PASSWORD="change_me_app"
 
 ALGORITHM_SERVICE_URL="http://127.0.0.1:8000"
 
@@ -32,6 +36,26 @@ extract_db_name() {
   local after_slash="${without_prefix#*/}"
   local db="${after_slash%%\?*}"
   echo "$db"
+}
+extract_db_host() {
+  local url="$1"
+  local without_prefix="${url#jdbc:mysql://}"
+  local host_port="${without_prefix%%/*}"
+  local host="${host_port%%:*}"
+  if [ -z "$host" ]; then
+    host="127.0.0.1"
+  fi
+  echo "$host"
+}
+extract_db_port() {
+  local url="$1"
+  local without_prefix="${url#jdbc:mysql://}"
+  local host_port="${without_prefix%%/*}"
+  local port="${host_port##*:}"
+  if [ "$port" = "$host_port" ] || [ -z "$port" ]; then
+    port="3306"
+  fi
+  echo "$port"
 }
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -70,8 +94,8 @@ fi
 print_step "4/12" "Write backend env file..."
 cat > "$APP_DIR/config/backend.env" <<EOF
 MYSQL_URL=$MYSQL_URL
-MYSQL_USER=$MYSQL_USER
-MYSQL_PASSWORD=$MYSQL_PASSWORD
+MYSQL_USER=$MYSQL_APP_USER
+MYSQL_PASSWORD=$MYSQL_APP_PASSWORD
 ALGORITHM_SERVICE_URL=$ALGORITHM_SERVICE_URL
 LLM_ENABLED=$LLM_ENABLED
 LLM_BASE_URL=$LLM_BASE_URL
@@ -90,12 +114,24 @@ fi
 
 print_step "6/12" "Ensure MySQL database exists..."
 DB_NAME="$(extract_db_name "$MYSQL_URL")"
+DB_HOST="$(extract_db_host "$MYSQL_URL")"
+DB_PORT="$(extract_db_port "$MYSQL_URL")"
 if command -v mysql >/dev/null 2>&1; then
-  mysql -h 127.0.0.1 -P 3306 -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" \
-    -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" \
-    || warn "Failed to auto-create database '$DB_NAME'. Please check MySQL credentials in backend.env."
+  mysql -h "$DB_HOST" -P "$DB_PORT" -u"$MYSQL_ADMIN_USER" -p"$MYSQL_ADMIN_PASSWORD" -e "
+CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '$MYSQL_APP_USER'@'127.0.0.1' IDENTIFIED BY '$MYSQL_APP_PASSWORD';
+CREATE USER IF NOT EXISTS '$MYSQL_APP_USER'@'localhost' IDENTIFIED BY '$MYSQL_APP_PASSWORD';
+GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$MYSQL_APP_USER'@'127.0.0.1';
+GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$MYSQL_APP_USER'@'localhost';
+FLUSH PRIVILEGES;
+" || {
+    echo "[ERROR] MySQL bootstrap failed."
+    echo "        Check MYSQL_ADMIN_USER / MYSQL_ADMIN_PASSWORD and MYSQL_URL."
+    exit 1
+  }
 else
-  warn "mysql cli not found; skip auto database creation for '$DB_NAME'."
+  echo "[ERROR] mysql cli not found; cannot bootstrap database '$DB_NAME'."
+  exit 1
 fi
 
 print_step "7/12" "Generate backend startup script..."
