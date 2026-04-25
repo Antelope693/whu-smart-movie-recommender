@@ -166,7 +166,12 @@ cd "$APP_DIR/backend"
 set -a
 source "$APP_DIR/config/backend.env"
 set +a
-exec mvn spring-boot:run >> "$APP_DIR/logs/backend.out.log" 2>> "$APP_DIR/logs/backend.err.log"
+JAR_PATH="$(ls -1 "$APP_DIR/backend/target/"movie-backend-*.jar 2>/dev/null | grep -v '\.original$' | head -n 1 || true)"
+if [ -z "$JAR_PATH" ]; then
+  echo "[ERROR] backend jar not found under $APP_DIR/backend/target. Run deploy/baota-one-click.sh first." >> "$APP_DIR/logs/backend.err.log"
+  exit 1
+fi
+exec java -jar "$JAR_PATH" >> "$APP_DIR/logs/backend.out.log" 2>> "$APP_DIR/logs/backend.err.log"
 EOF
 chmod +x "$APP_DIR/scripts/start-backend.sh"
 
@@ -185,13 +190,13 @@ EOF
 chmod +x "$APP_DIR/scripts/start-algorithm.sh"
 chown -R "$RUN_USER":"$RUN_USER" "$APP_DIR/scripts" "$APP_DIR/logs" || true
 
-print_step "9/12" "Warm compile backend..."
+print_step "9/12" "Build backend jar (recommended for server)..."
 (
   cd "$APP_DIR/backend"
   set -a
   source "$APP_DIR/config/backend.env"
   set +a
-  mvn -q -DskipTests compile
+  mvn -q -DskipTests package
 )
 
 print_step "10/12" "Generate Baota Supervisor template..."
