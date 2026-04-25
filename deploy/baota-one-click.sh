@@ -29,6 +29,7 @@ PYTHON_BIN="python3"
 
 print_step() { echo "[$1] $2"; }
 warn() { echo "[WARN] $1"; }
+info() { echo "[INFO] $1"; }
 extract_db_name() {
   # from jdbc:mysql://host:port/db_name?params -> db_name
   local url="$1"
@@ -64,6 +65,19 @@ need_cmd() {
   fi
 }
 
+# Optional: load variables from an external env file so reruns are reproducible.
+# Usage:
+#   BAOTA_ENV_FILE=/root/whu-movie.env bash deploy/baota-one-click.sh
+if [ -n "${BAOTA_ENV_FILE:-}" ]; then
+  if [ ! -f "$BAOTA_ENV_FILE" ]; then
+    echo "[ERROR] BAOTA_ENV_FILE not found: $BAOTA_ENV_FILE"
+    exit 1
+  fi
+  info "Loading BAOTA_ENV_FILE=$BAOTA_ENV_FILE"
+  # shellcheck disable=SC1090
+  source "$BAOTA_ENV_FILE"
+fi
+
 print_step "1/12" "Check required commands..."
 need_cmd git
 need_cmd "$PYTHON_BIN"
@@ -92,7 +106,11 @@ else
 fi
 
 print_step "4/12" "Write backend env file..."
-cat > "$APP_DIR/config/backend.env" <<EOF
+BACKEND_ENV_PATH="$APP_DIR/config/backend.env"
+if [ -f "$BACKEND_ENV_PATH" ] && [ "${FORCE_WRITE_BACKEND_ENV:-false}" != "true" ]; then
+  info "backend.env already exists, keep it (set FORCE_WRITE_BACKEND_ENV=true to overwrite)"
+else
+  cat > "$BACKEND_ENV_PATH" <<EOF
 MYSQL_URL=$MYSQL_URL
 MYSQL_USER=$MYSQL_APP_USER
 MYSQL_PASSWORD=$MYSQL_APP_PASSWORD
@@ -102,8 +120,9 @@ LLM_BASE_URL=$LLM_BASE_URL
 LLM_MODEL=$LLM_MODEL
 LLM_API_KEY=$LLM_API_KEY
 EOF
-chmod 600 "$APP_DIR/config/backend.env"
-chown "$RUN_USER":"$RUN_USER" "$APP_DIR/config/backend.env" || true
+  chmod 600 "$BACKEND_ENV_PATH"
+  chown "$RUN_USER":"$RUN_USER" "$BACKEND_ENV_PATH" || true
+fi
 
 print_step "5/12" "Prepare algorithm service venv..."
 if [ ! -d "$APP_DIR/algorithm-service/.venv" ]; then
