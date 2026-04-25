@@ -1,0 +1,8 @@
+# Local environment secrets
+backend/.env
+algorithm-service/.env
+
+# Build outputs
+backend/target/
+algorithm-service/__pycache__/
+algorithm-service/.venv/
