@@ -25,6 +25,14 @@ PYTHON_BIN="python3"
 
 print_step() { echo "[$1] $2"; }
 warn() { echo "[WARN] $1"; }
+extract_db_name() {
+  # from jdbc:mysql://host:port/db_name?params -> db_name
+  local url="$1"
+  local without_prefix="${url#jdbc:mysql://}"
+  local after_slash="${without_prefix#*/}"
+  local db="${after_slash%%\?*}"
+  echo "$db"
+}
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "[ERROR] missing command: $1"
@@ -80,11 +88,25 @@ fi
 "$APP_DIR/algorithm-service/.venv/bin/pip" install --upgrade pip
 "$APP_DIR/algorithm-service/.venv/bin/pip" install -r "$APP_DIR/algorithm-service/requirements.txt"
 
-print_step "6/12" "Generate backend startup script..."
+print_step "6/12" "Ensure MySQL database exists..."
+DB_NAME="$(extract_db_name "$MYSQL_URL")"
+if command -v mysql >/dev/null 2>&1; then
+  mysql -h 127.0.0.1 -P 3306 -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" \
+    -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" \
+    || warn "Failed to auto-create database '$DB_NAME'. Please check MySQL credentials in backend.env."
+else
+  warn "mysql cli not found; skip auto database creation for '$DB_NAME'."
+fi
+
+print_step "7/12" "Generate backend startup script..."
 cat > "$APP_DIR/scripts/start-backend.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 APP_DIR="/www/wwwroot/whu-smart-movie-recommender"
+if ss -lnt | grep -q ':8080 '; then
+  echo "backend already listening on :8080, skip duplicate start" >> "$APP_DIR/logs/backend.out.log"
+  exit 0
+fi
 cd "$APP_DIR/backend"
 set -a
 source "$APP_DIR/config/backend.env"
@@ -93,18 +115,22 @@ exec mvn spring-boot:run >> "$APP_DIR/logs/backend.out.log" 2>> "$APP_DIR/logs/b
 EOF
 chmod +x "$APP_DIR/scripts/start-backend.sh"
 
-print_step "7/12" "Generate algorithm startup script..."
+print_step "8/12" "Generate algorithm startup script..."
 cat > "$APP_DIR/scripts/start-algorithm.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 APP_DIR="/www/wwwroot/whu-smart-movie-recommender"
+if ss -lnt | grep -q ':8000 '; then
+  echo "algorithm already listening on :8000, skip duplicate start" >> "$APP_DIR/logs/algorithm.out.log"
+  exit 0
+fi
 cd "$APP_DIR/algorithm-service"
 exec "$APP_DIR/algorithm-service/.venv/bin/uvicorn" app.main:app --host 0.0.0.0 --port 8000 >> "$APP_DIR/logs/algorithm.out.log" 2>> "$APP_DIR/logs/algorithm.err.log"
 EOF
 chmod +x "$APP_DIR/scripts/start-algorithm.sh"
 chown -R "$RUN_USER":"$RUN_USER" "$APP_DIR/scripts" "$APP_DIR/logs" || true
 
-print_step "8/12" "Warm compile backend..."
+print_step "9/12" "Warm compile backend..."
 (
   cd "$APP_DIR/backend"
   set -a
@@ -113,7 +139,7 @@ print_step "8/12" "Warm compile backend..."
   mvn -q -DskipTests compile
 )
 
-print_step "9/12" "Generate Baota Supervisor template..."
+print_step "10/12" "Generate Baota Supervisor template..."
 cat > "$APP_DIR/config/baota-supervisor.txt" <<EOF
 [movie-algorithm]
 command=$APP_DIR/scripts/start-algorithm.sh
@@ -128,15 +154,15 @@ autostart=true
 autorestart=true
 EOF
 
-print_step "10/12" "Optional quick health checks (if services already running)..."
+print_step "11/12" "Optional quick health checks (if services already running)..."
 curl -fsS http://127.0.0.1:8000/api/python/health >/dev/null 2>&1 && echo "algorithm health: ok" || warn "algorithm not running yet"
 curl -fsS "http://127.0.0.1:8080/api/recommend/movie?userId=1&topN=1" >/dev/null 2>&1 && echo "backend health: ok" || warn "backend not running yet"
 
-print_step "11/12" "Firewall hints (Aliyun security group still required)..."
+print_step "12/12" "Firewall hints (Aliyun security group still required)..."
 warn "Baota firewall (if enabled): allow 8080 (backend) and 8000 (algorithm, optional public)."
 warn "Aliyun Security Group must also allow the same ports, otherwise external access fails."
 
-print_step "12/12" "Done."
+print_step "13/13" "Done."
 echo "------------------------------------------------------------"
 echo "Baota Supervisor commands:"
 echo "  movie-algorithm: $APP_DIR/scripts/start-algorithm.sh"
