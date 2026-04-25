@@ -2,6 +2,8 @@ package com.whu.movie.service;
 
 import java.util.List;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -9,10 +11,13 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
 
 @Component
 public class LlmClient {
+
+    private static final Logger log = LoggerFactory.getLogger(LlmClient.class);
 
     private final RestTemplate restTemplate;
 
@@ -75,16 +80,32 @@ public class LlmClient {
             );
             Map responseBody = response.getBody();
             if (responseBody == null || !responseBody.containsKey("choices")) {
+                log.warn("LLM response missing choices. baseUrl={}, model={}", llmBaseUrl, llmModel);
                 return "LLM响应为空，使用默认解释。";
             }
             List<Map<String, Object>> choices = (List<Map<String, Object>>) responseBody.get("choices");
             if (choices.isEmpty()) {
+                log.warn("LLM response choices empty. baseUrl={}, model={}", llmBaseUrl, llmModel);
                 return "LLM未返回候选结果，使用默认解释。";
             }
             Map<String, Object> message = (Map<String, Object>) choices.get(0).get("message");
+            if (message == null) {
+                log.warn("LLM response message null. baseUrl={}, model={}", llmBaseUrl, llmModel);
+                return "LLM内容为空，使用默认解释。";
+            }
             Object content = message.get("content");
             return content == null ? "LLM内容为空，使用默认解释。" : content.toString();
+        } catch (HttpStatusCodeException ex) {
+            String resp = ex.getResponseBodyAsString();
+            if (resp != null && resp.length() > 500) {
+                resp = resp.substring(0, 500) + "...(truncated)";
+            }
+            log.error("LLM HTTP error. status={}, baseUrl={}, model={}, body={}",
+                    ex.getStatusCode(), llmBaseUrl, llmModel, resp);
+            return "LLM调用失败，使用默认解释。";
         } catch (Exception ex) {
+            log.error("LLM call failed. baseUrl={}, model={}, error={}",
+                    llmBaseUrl, llmModel, ex.toString());
             return "LLM调用失败，使用默认解释。";
         }
     }
